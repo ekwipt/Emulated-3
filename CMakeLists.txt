@@ -94,8 +94,11 @@ target_link_libraries(eiii_rack_impl PUBLIC clap eiii_ui)
 set(plugin_dir ${CMAKE_CURRENT_BINARY_DIR}/plugins)
 if(EIII_VST3)
 	include(FetchContent)
+	# patch: hosts may pass fewer audio buses than declared (Qtractor passes no Sample In); v0.16.0 read past them
+	find_package(Git REQUIRED)
 	FetchContent_Declare(clap-wrapper GIT_REPOSITORY https://github.com/free-audio/clap-wrapper.git
-		GIT_TAG ${EIII_CLAP_WRAPPER_TAG} GIT_SHALLOW TRUE)
+		GIT_TAG ${EIII_CLAP_WRAPPER_TAG} GIT_SHALLOW TRUE UPDATE_DISCONNECTED TRUE
+		PATCH_COMMAND ${GIT_EXECUTABLE} apply --whitespace=nowarn ${CMAKE_CURRENT_SOURCE_DIR}/cmake/clap-wrapper-missing-buses.patch)
 	set(CLAP_WRAPPER_DOWNLOAD_DEPENDENCIES TRUE CACHE BOOL "")
 	FetchContent_MakeAvailable(clap-wrapper)
 	# VST3 class ID: clap-wrapper derives it from the CLAP id (SHA-1 name UUID of "org.eiii-core.eiii-rack"), so it is
@@ -129,4 +132,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	# at exit.
 	target_link_options(eiii-rack_clap PRIVATE -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/plugin/exports.map)
 	set_property(TARGET eiii-rack_clap APPEND PROPERTY LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/plugin/exports.map)
+endif()
+
+# tools/vst3_host_test: loads the VST3 and drives it the way a DAW does (cmake --build build --target vst3_host_test)
+if(EIII_VST3 AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+	set(vst3_sdk ${VST3_SDK_ROOT})
+	if(NOT vst3_sdk)
+		set(vst3_sdk ${CMAKE_BINARY_DIR}/cpm/vst3sdk)
+	endif()
+	set(hosting ${vst3_sdk}/public.sdk/source/vst/hosting)
+	add_executable(vst3_host_test EXCLUDE_FROM_ALL tools/vst3_host_test.cpp
+		${hosting}/module.cpp ${hosting}/module_linux.cpp ${hosting}/hostclasses.cpp ${hosting}/eventlist.cpp
+		${hosting}/parameterchanges.cpp ${hosting}/pluginterfacesupport.cpp ${vst3_sdk}/public.sdk/source/vst/utility/stringconvert.cpp)
+	target_link_libraries(vst3_host_test PRIVATE base-sdk-vst3 ${CMAKE_DL_LIBS} Threads::Threads)
+	add_dependencies(vst3_host_test eiii-rack_vst3)
 endif()
