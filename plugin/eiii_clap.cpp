@@ -19,6 +19,7 @@
 // choosers are a separate process (zenity or kdialog, or the program named by EIII_RACK_PICKER: called as
 // "PICKER cd|hd|rom START" and printing the chosen path) so no plugin thread ever waits for one.
 #include "clap/clap.h"
+#include "plugin/eiii_clap_entry.h"
 #include "panel/eiii_panel_adapter.h"
 #include "runtime/eiii_engine.h"
 #include "standalone/ui_macro.h"
@@ -606,6 +607,16 @@ clap_plugin_note_ports_t const k_note_ports = { note_ports_count, note_ports_get
 uint32_t latency_get(clap_plugin_t const *p) { return instance::of(p)->latency; }
 clap_plugin_latency_t const k_latency = { latency_get };
 
+// No parameters (the panel is the instrument), but an empty params extension: clap-wrapper only creates the hidden
+// parameters that carry MIDI CC, pitch bend and program change into a VST3 plugin when the CLAP has one.
+uint32_t params_count(clap_plugin_t const *) { return 0; }
+bool params_get_info(clap_plugin_t const *, uint32_t, clap_param_info_t *) { return false; }
+bool params_get_value(clap_plugin_t const *, clap_id, double *) { return false; }
+bool params_value_to_text(clap_plugin_t const *, clap_id, double, char *, uint32_t) { return false; }
+bool params_text_to_value(clap_plugin_t const *, clap_id, char const *, double *) { return false; }
+void params_flush(clap_plugin_t const *, clap_input_events_t const *, clap_output_events_t const *) { }
+clap_plugin_params_t const k_params = { params_count, params_get_info, params_get_value, params_value_to_text, params_text_to_value, params_flush };
+
 bool render_hard_rt(clap_plugin_t const *) { return false; }
 bool render_set(clap_plugin_t const *p, clap_plugin_render_mode mode) { instance::of(p)->eng.set_realtime(mode == CLAP_RENDER_REALTIME); return true; }
 clap_plugin_render_t const k_render = { render_hard_rt, render_set };
@@ -920,6 +931,7 @@ void const *p_get_extension(clap_plugin_t const *, char const *id)
 	if (!strcmp(id, CLAP_EXT_AUDIO_PORTS)) return &k_audio_ports;
 	if (!strcmp(id, CLAP_EXT_NOTE_PORTS)) return &k_note_ports;
 	if (!strcmp(id, CLAP_EXT_LATENCY)) return &k_latency;
+	if (!strcmp(id, CLAP_EXT_PARAMS)) return &k_params;
 	if (!strcmp(id, CLAP_EXT_RENDER)) return &k_render;
 	if (!strcmp(id, CLAP_EXT_STATE)) return &k_state;
 	if (!strcmp(id, CLAP_EXT_GUI)) return &k_gui;
@@ -953,4 +965,7 @@ void const *e_get_factory(char const *id) { return !strcmp(id, CLAP_PLUGIN_FACTO
 
 } // namespace
 
-extern "C" CLAP_EXPORT clap_plugin_entry_t const clap_entry = { CLAP_VERSION_INIT, e_init, e_deinit, e_get_factory };
+// exported as clap_entry by eiii_clap_entry.cpp
+bool eiii_rack_init(char const *plugin_path) { return e_init(plugin_path); }
+void eiii_rack_deinit() { e_deinit(); }
+void const *eiii_rack_get_factory(char const *factory_id) { return e_get_factory(factory_id); }

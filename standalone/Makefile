@@ -47,13 +47,15 @@ TRACES   ?= $(HOME)/EIII_RE/analysis/traces/standalone_spike
 eiii-standalone: $(BUILD)/eiii-standalone
 	cp $< $@
 
-# everything except the standalone's main: the runtime library shared by the standalone, the tests and the plugin
-LIB_OBJS  = $(filter-out $(BUILD)/obj/eiii_host.o $(BUILD)/obj/eiii_gui.o,$(OBJ))
+# everything except the standalone's main and its ALSA I/O: the runtime library shared by the standalone, the tests and
+# the plugin (which therefore does not link libasound)
+HOST_ONLY = $(BUILD)/obj/eiii_host.o $(BUILD)/obj/eiii_gui.o $(BUILD)/obj/host_io.o
+LIB_OBJS  = $(filter-out $(HOST_ONLY),$(OBJ))
 $(BUILD)/libeiiiruntime.a: $(LIB_OBJS)
 	rm -f $@; ar rcs $@ $^
 
-$(OUT): $(BUILD)/obj/eiii_host.o $(BUILD)/obj/eiii_gui.o $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a
-	$(CXX) $(LDFLAGS) -o $@ $(BUILD)/obj/eiii_host.o $(BUILD)/obj/eiii_gui.o $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a $(LDLIBS) $(LDLIBS_X)
+$(OUT): $(HOST_ONLY) $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a
+	$(CXX) $(LDFLAGS) -o $@ $(HOST_ONLY) $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a $(LDLIBS) $(LDLIBS_X)
 
 # UI library: renderer + panel artwork + embedded OFL fonts
 OBJ_UI    = $(addprefix $(BUILD)/obj/,$(notdir $(SRC_UI:.cpp=.o))) $(BUILD)/obj/fonts.o
@@ -73,10 +75,11 @@ $(BUILD)/tools:
 plugin:
 	$(MAKE) BUILD=build/pic OPT="-O2 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden" build/pic/EIII-Rack.clap
 	@echo "CLAP plugin: $(CURDIR)/build/pic/EIII-Rack.clap"
-$(BUILD)/EIII-Rack.clap: $(BUILD)/obj/eiii_clap.o $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a ../plugin/exports.map
-	$(CXX) -shared $(PLUGIN_LDFLAGS) -o $@ $(BUILD)/obj/eiii_clap.o $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a \
-	       -Wl,--version-script=../plugin/exports.map -Wl,--exclude-libs,ALL -Wl,-z,defs $(LDLIBS_X) -lasound -lpthread
--include $(BUILD)/obj/eiii_clap.d
+PLUGIN_OBJ = $(BUILD)/obj/eiii_clap.o $(BUILD)/obj/eiii_clap_entry.o
+$(BUILD)/EIII-Rack.clap: $(PLUGIN_OBJ) $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a ../plugin/exports.map
+	$(CXX) -shared $(PLUGIN_LDFLAGS) -o $@ $(PLUGIN_OBJ) $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a \
+	       -Wl,--version-script=../plugin/exports.map -Wl,--exclude-libs,ALL -Wl,-z,defs $(LDLIBS_X) -lpthread
+-include $(PLUGIN_OBJ:.o=.d)
 
 # panel view tests (link the UI library)
 $(BUILD)/tests/display_themes: ../tests/display_themes.cpp $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a | $(BUILD)/tests
@@ -98,6 +101,7 @@ endef
 $(foreach s,$(filter-out eiii_scsi.cpp,$(SRC_HOST)) $(SRC_CORE),$(eval $(call cxx_rule,$(s),)))
 $(foreach s,$(SRC_UI),$(eval $(call cxx_rule,$(s),)))
 $(eval $(call cxx_rule,../plugin/eiii_clap.cpp,-I../third_party/clap/include))
+$(eval $(call cxx_rule,../plugin/eiii_clap_entry.cpp,-I../third_party/clap/include))
 # eiii_scsi.cpp is extracted verbatim from emu3.cpp and includes MAME headers: treat like upstream code
 $(eval $(call cxx_rule,eiii_scsi.cpp,-w))
 # upstream MAME files are compiled unmodified; their warnings are not ours to fix
