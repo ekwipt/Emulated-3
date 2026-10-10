@@ -323,8 +323,11 @@ void engine::start(engine_config const &cfg)
 	m_cfg = cfg;
 	m_realtime = cfg.realtime;
 	double const sr = cfg.rt.sample_rate;
-	unsigned const min_lat = unsigned(std::lround(1024.0 * sr / 48000.0));
-	m_latency = std::max<unsigned>(min_lat, unsigned(2 * cfg.max_block + 512));
+	// the audio thread takes at most one block at a time and the engine refills the ring as soon as it has room, so
+	// the ring only needs one block plus a margin for the engine thread's scheduling and for stretches where the
+	// emulation runs slower than real time
+	double const margin_48k = cfg.latency_margin ? double(cfg.latency_margin) : double(engine_config::default_latency_margin);
+	m_latency = unsigned(cfg.max_block) + unsigned(std::lround(margin_48k * sr / 48000.0));
 	if (m_latency > m_ring.capacity() / 2) m_latency = unsigned(m_ring.capacity() / 2);
 	m_quit = false;
 	m_primed = false;

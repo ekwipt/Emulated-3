@@ -3,7 +3,7 @@
 //   GUI/main thread : post() hardware inputs, snapshot() the panel state, power()
 //   audio thread    : midi() timestamped MIDI IN bytes, pull() audio frames — never blocks in realtime mode,
 //                     never allocates, never locks.
-// Latency (max(1024 frames at 48 kHz, 2 x block + 512)): the engine keeps exactly `latency()` frames ahead of the audio thread; MIDI posted at block offset s is
+// Latency (largest host block + a margin, default_latency_margin frames at 48 kHz scaled to the rate): the engine keeps exactly `latency()` frames ahead of the audio thread; MIDI posted at block offset s is
 // applied at that frame + latency, i.e. sample-accurately delayed by the reported latency.
 #pragma once
 #include "eiii_runtime.h"
@@ -53,6 +53,9 @@ struct engine_config
 {
 	runtime_config rt;
 	size_t max_block = 1024;        // largest host block (frames)
+	// frames at 48 kHz (scaled to the sample rate) the engine keeps ready beyond one host block; 0 = default
+	static constexpr unsigned default_latency_margin = 512;
+	unsigned latency_margin = 0;
 	bool realtime = true;           // false: pull() waits for the engine (offline render)
 };
 

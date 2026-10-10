@@ -65,6 +65,8 @@ $(BUILD)/libeiiiui.a: $(OBJ_UI)
 	rm -f $@; ar rcs $@ $^
 $(BUILD)/tools/clap_host_test: ../tools/clap_host_test.cpp | $(BUILD)/tools
 	$(CXX) $(CXXFLAGS) -I../third_party/clap/include $< -o $@ -lX11 -ldl -lpthread
+$(BUILD)/tools/latency_bench: ../tools/latency_bench.cpp | $(BUILD)/tools
+	$(CXX) $(CXXFLAGS) -I../third_party/clap/include $< -o $@ -ldl -lpthread
 $(BUILD)/tools/%: ../tools/%.cpp $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a | $(BUILD)/tools
 	$(CXX) $(CXXFLAGS) -I.. -MMD -MP $< $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a $(LDLIBS) $(LDLIBS_X) -o $@
 $(BUILD)/tools:

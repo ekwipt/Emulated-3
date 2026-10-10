@@ -12,6 +12,7 @@
 // Audio: stereo Main Out; stereo Sample In feeds the ADC board (sampling through the original OS, level = the
 // panel's Sample Input slider).
 //   cem_model = v1|v2              autoload_bank = 44   autoload_drive = 3   autoload_preset = 1   (optional)
+//   latency_margin = 512           frames at 48 kHz kept ready beyond one host block (optional; also EIII_LATENCY_MARGIN)
 // These are the defaults of a new instance; the media in use are saved in the CLAP state, so a project reopens with
 // its disks.  The menu bar above the panel shows the drives (D1 OS hard disk, D3 CD-ROM, extra drives D4..D7) and
 // changes them at runtime: a disc into / out of a CD drive is a hot swap (the OS sees a disc change); any other change
@@ -69,6 +70,7 @@ struct media_config
 	std::string cd_last_dir;        // where the CD chooser opens when the drive is empty
 	std::string hd_changes[8];      // hard disk change sets from the project, used when the engine starts
 	int autoload_bank = -1, autoload_drive = 3, autoload_preset = -1;
+	unsigned latency_margin = 0;    // 0 = the engine's default
 	std::string &hd() { return scsi[1].path; }
 	std::string &cd() { return scsi[3].path; }
 	media_config() { scsi[1].kind = eiii::scsi_kind::hd; scsi[3].kind = eiii::scsi_kind::cd; }
@@ -111,6 +113,7 @@ media_config read_media_config()
 			}
 			else if (k == "autoload_bank") m.autoload_bank = atoi(v.c_str()); else if (k == "autoload_drive") m.autoload_drive = atoi(v.c_str());
 			else if (k == "autoload_preset") m.autoload_preset = atoi(v.c_str());
+			else if (k == "latency_margin") m.latency_margin = unsigned(std::max(0, atoi(v.c_str())));
 		}
 	}
 	auto env = [](char const *k, std::string &v) { if (char const *e = getenv(k)) v = e; };
@@ -118,6 +121,7 @@ media_config read_media_config()
 	if (char const *e = getenv("EIII_AUTOLOAD_BANK")) m.autoload_bank = atoi(e);
 	if (char const *e = getenv("EIII_AUTOLOAD_DRIVE")) m.autoload_drive = atoi(e);
 	if (char const *e = getenv("EIII_AUTOLOAD_PRESET")) m.autoload_preset = atoi(e);
+	if (char const *e = getenv("EIII_LATENCY_MARGIN")) m.latency_margin = unsigned(std::max(0, atoi(e)));
 	// nothing configured: the default folders (XDG data dir)
 	std::string const data = default_media_dir();
 	auto first = [](std::string const &dir, std::vector<std::string> const &exts) {
@@ -826,7 +830,7 @@ void p_destroy(clap_plugin_t const *p)
 		{
 			auto const st = s->eng.stats();
 			eiii::lcd_view v; if (s->ui) s->ui->read_lcd(v);
-			fprintf(f, "instance %p emu %.2f frames %llu underruns %llu (first at frame %llu, %llu frames) dropped_in %llu/%llu leds %05x lcd [%s|%s|%s|%s]\n", (void *)s, st.emu_seconds,
+			fprintf(f, "instance %p emu %.2f busy %.2f frames %llu underruns %llu (first at frame %llu, %llu frames) dropped_in %llu/%llu leds %05x lcd [%s|%s|%s|%s]\n", (void *)s, st.emu_seconds, st.busy_fraction,
 				(unsigned long long)st.frames_out, (unsigned long long)st.underruns, (unsigned long long)st.first_underrun_at, (unsigned long long)st.underrun_frames, (unsigned long long)st.panel_dropped, (unsigned long long)st.midi_dropped,
 				s->ui ? s->ui->read_leds() : 0u, eiii::lcd_row_text(v, 0).c_str(), eiii::lcd_row_text(v, 1).c_str(), eiii::lcd_row_text(v, 2).c_str(), eiii::lcd_row_text(v, 3).c_str());
 			fclose(f);
@@ -859,6 +863,7 @@ bool p_activate(clap_plugin_t const *p, double sample_rate, uint32_t, uint32_t m
 		for (unsigned id = 4; id < 8; ++id) c.rt.scsi[id] = s->media.scsi[id];
 		c.rt.sample_rate = sample_rate;
 		c.max_block = std::max<uint32_t>(max_frames, 64);
+		c.latency_margin = s->media.latency_margin;
 		c.realtime = true;
 		s->eng.start(c);
 		s->hd_serial = s->eng.hd_changes_serial();
