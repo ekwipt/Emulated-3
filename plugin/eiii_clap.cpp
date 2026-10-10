@@ -846,7 +846,8 @@ bool p_activate(clap_plugin_t const *p, double sample_rate, uint32_t, uint32_t m
 	// latency allows for) restarts it from power-on, like switching the unit off and on
 	if (!s->eng.started() || sample_rate != s->sample_rate || max_frames > s->max_frames)
 	{
-		if (s->eng.started())
+		bool const restart = s->eng.started();
+		if (restart)
 		{
 			// restart at the new rate: keep what the OS wrote to the disks
 			s->eng.shutdown();
@@ -863,7 +864,10 @@ bool p_activate(clap_plugin_t const *p, double sample_rate, uint32_t, uint32_t m
 		s->hd_serial = s->eng.hd_changes_serial();
 		s->sample_rate = sample_rate; s->max_frames = std::max<uint32_t>(max_frames, 64);
 		unsigned const lat = s->eng.latency();
-		if (lat != s->latency) { s->latency = lat; if (s->host_latency) s->host_latency->changed(s->host); }
+		// the host reads the latency after activate(), so only a restart changes what it already knows.  Not calling
+		// changed() on the first activation also keeps Qtractor alive: through clap-wrapper it becomes a VST3
+		// restartComponent(kLatencyChanged) from inside the host's own setActive(), and Qtractor crashed on that.
+		if (lat != s->latency) { s->latency = lat; if (restart && s->host_latency) s->host_latency->changed(s->host); }
 		s->setup_macro();
 	}
 	return true;
