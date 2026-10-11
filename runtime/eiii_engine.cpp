@@ -363,6 +363,7 @@ engine_stats engine::stats() const
 	engine_stats s;
 	s.frames_out = m_frames_out; s.underruns = m_underruns; s.first_underrun_at = m_first_underrun_at; s.underrun_frames = m_underrun_frames; s.dropped_frames = m_dropped;
 	s.midi_dropped = m_midi_dropped; s.panel_dropped = m_panel_dropped; s.emu_seconds = m_emu_seconds; s.busy_fraction = m_busy;
+	s.rt_priority = m_rt_priority;
 	return s;
 }
 
@@ -427,7 +428,7 @@ void engine::thread_main()
 	{
 		// a modest realtime priority when the process is allowed one (RLIMIT_RTPRIO / rtkit-granted hosts); else unchanged
 		sched_param sp{}; sp.sched_priority = 10;
-		pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+		m_rt_priority = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0;
 	}
 	m_silence.assign(4096, 0.0f);
 	m_in_buf.clear(); m_in_end = m_in.read_index();

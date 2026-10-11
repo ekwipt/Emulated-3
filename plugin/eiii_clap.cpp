@@ -12,7 +12,7 @@
 // Audio: stereo Main Out; stereo Sample In feeds the ADC board (sampling through the original OS, level = the
 // panel's Sample Input slider).
 //   cem_model = v1|v2              autoload_bank = 44   autoload_drive = 3   autoload_preset = 1   (optional)
-//   latency_margin = 512           frames at 48 kHz kept ready beyond one host block (optional; also EIII_LATENCY_MARGIN)
+//   latency_margin = 256           frames at 48 kHz kept ready beyond one host block (optional; also EIII_LATENCY_MARGIN)
 // These are the defaults of a new instance; the media in use are saved in the CLAP state, so a project reopens with
 // its disks.  The menu bar above the panel shows the drives (D1 OS hard disk, D3 CD-ROM, extra drives D4..D7) and
 // changes them at runtime: a disc into / out of a CD drive is a hot swap (the OS sees a disc change); any other change
@@ -832,7 +832,7 @@ void p_destroy(clap_plugin_t const *p)
 		{
 			auto const st = s->eng.stats();
 			eiii::lcd_view v; if (s->ui) s->ui->read_lcd(v);
-			fprintf(f, "instance %p emu %.2f busy %.2f frames %llu underruns %llu (first at frame %llu, %llu frames) dropped_in %llu/%llu leds %05x lcd [%s|%s|%s|%s]\n", (void *)s, st.emu_seconds, st.busy_fraction,
+			fprintf(f, "instance %p emu %.2f busy %.2f rt %d frames %llu underruns %llu (first at frame %llu, %llu frames) dropped_in %llu/%llu leds %05x lcd [%s|%s|%s|%s]\n", (void *)s, st.emu_seconds, st.busy_fraction, int(st.rt_priority),
 				(unsigned long long)st.frames_out, (unsigned long long)st.underruns, (unsigned long long)st.first_underrun_at, (unsigned long long)st.underrun_frames, (unsigned long long)st.panel_dropped, (unsigned long long)st.midi_dropped,
 				s->ui ? s->ui->read_leds() : 0u, eiii::lcd_row_text(v, 0).c_str(), eiii::lcd_row_text(v, 1).c_str(), eiii::lcd_row_text(v, 2).c_str(), eiii::lcd_row_text(v, 3).c_str());
 			fclose(f);

@@ -54,7 +54,7 @@ struct engine_config
 	runtime_config rt;
 	size_t max_block = 1024;        // largest host block (frames)
 	// frames at 48 kHz (scaled to the sample rate) the engine keeps ready beyond one host block; 0 = default
-	static constexpr unsigned default_latency_margin = 512;
+	static constexpr unsigned default_latency_margin = 256;
 	unsigned latency_margin = 0;
 	bool realtime = true;           // false: pull() waits for the engine (offline render)
 };
@@ -63,6 +63,7 @@ struct engine_stats
 {
 	uint64_t frames_out = 0, underruns = 0, underrun_frames = 0, first_underrun_at = 0, dropped_frames = 0, midi_dropped = 0, panel_dropped = 0;
 	double emu_seconds = 0, busy_fraction = 0;
+	bool rt_priority = false;        // the engine thread got its realtime (SCHED_FIFO) priority
 };
 
 class engine
@@ -170,6 +171,7 @@ private:
 	std::atomic<uint64_t> m_first_underrun_at{0};
 	std::atomic<uint64_t> m_underruns{0}, m_underrun_frames{0}, m_frames_out{0}, m_dropped{0}, m_midi_dropped{0}, m_panel_dropped{0};
 	std::atomic<double> m_emu_seconds{0}, m_busy{0};
+	std::atomic<bool> m_rt_priority{false};
 	std::vector<float> m_silence;
 };
 

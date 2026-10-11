@@ -111,6 +111,7 @@ int main(int argc, char **argv)
 
 	std::atomic<bool> run{true};
 	std::vector<double> delays;
+	int64_t first_sound = -1;                               // frame of the first chord that sounded
 	uint64_t late_blocks = 0, blocks = 0, chords = 0;
 	double worst_process = 0;
 	std::thread audio([&] {
@@ -162,7 +163,7 @@ int main(int argc, char **argv)
 				int64_t const f = int64_t(f0 + k);
 				if (note_on_at >= 0 && f >= note_on_at)
 				{
-					if (v > std::max(1e-3f, 4.f * pre_peak)) { delays.push_back(double(f - note_on_at) * 1e3 / rate); note_on_at = -1; }
+					if (v > std::max(1e-3f, 4.f * pre_peak)) { delays.push_back(double(f - note_on_at) * 1e3 / rate); if (first_sound < 0) first_sound = f; note_on_at = -1; }
 					else if (uint64_t(f - note_on_at) > window) note_on_at = -1;
 				}
 				recent.push_back(v);
@@ -194,8 +195,8 @@ int main(int argc, char **argv)
 
 	printf("process(): worst %.3f ms, %llu of %llu blocks over half the block time\n", worst_process * 1e3, (unsigned long long)late_blocks, (unsigned long long)blocks);
 	if (delays.empty()) printf("note-to-sound: no chord sounded (%llu played): no bank loaded?\n", (unsigned long long)chords);
-	else printf("note-to-sound: %zu of %llu chords, min %.1f ms, median %.1f ms, max %.1f ms (reported latency %.1f ms of it)\n",
-		delays.size(), (unsigned long long)chords, percentile(delays, 0), percentile(delays, 0.5), percentile(delays, 1), latency * 1e3 / rate);
+	else printf("note-to-sound: %zu of %llu chords, min %.1f ms, median %.1f ms, max %.1f ms (reported latency %.1f ms of it); first sound at frame %lld\n",
+		delays.size(), (unsigned long long)chords, percentile(delays, 0), percentile(delays, 0.5), percentile(delays, 1), latency * 1e3 / rate, (long long)first_sound);
 	if (FILE *f = fopen(report, "r")) { char b[1024]; while (fgets(b, sizeof b, f)) printf("engine: %s", b); fclose(f); }
 	unlink(report);
 	return 0;
