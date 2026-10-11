@@ -1,9 +1,17 @@
 # Emulated-3
 
+> **This fork is the macOS / Apple silicon version: plugins only, VST3 and Audio Unit (`.component`).**
+> No standalone app, no CLAP and no Linux build. The emulator itself is
+> [parguinsys/Emulated-3](https://github.com/parguinsys/Emulated-3) by its original author, unchanged in behaviour;
+> this fork ports the plugin to macOS (native Cocoa GUI, macOS file dialogs) and wraps it as VST3 + AU with
+> [clap-wrapper](https://github.com/free-audio/clap-wrapper). The binaries are universal (Apple silicon native, Intel
+> also works). Download them from [Releases](https://github.com/ekwipt/Emulated-3/releases) or build them
+> ([INSTALL.md](INSTALL.md)).
+
 **Beta.** Expect rough edges, and please report what you find.
 
-An unofficial emulator of the **E-mu Emulator III** sampler, as a **CLAP instrument plugin** and a **Linux
-standalone**. It runs the original EIII boot ROM and **Operating System 2.42** unmodified, from your own disk images.
+An unofficial emulator of the **E-mu Emulator III** sampler, as a **VST3 and Audio Unit instrument plugin for
+macOS**. It runs the original EIII boot ROM and **Operating System 2.42** unmodified, from your own disk images.
 You operate it from the original rack front panel (the panel is the instrument), MIDI goes to the emulated MIDI IN, and
 the voice outputs are rendered through a model of the EIII's F-Chip and CEM3387 filter/VCA hardware.
 
@@ -12,8 +20,8 @@ the voice outputs are rendered through a model of the EIII's F-Chip and CEM3387 
 > **No E-mu material is included.** This repository has no boot ROMs, no operating system, and no sample or bank data.
 > To use it you need your own EIII boot ROM dumps, an OS 2.42 hard disk image and, optionally, EIII CD-ROM images.
 >
-> **[Download the plugin from Releases](https://github.com/parguinsys/Emulated-3/releases), then follow
-> [INSTALL.md](INSTALL.md)**: where the ROMs, the OS disk and CDs go, first start, and troubleshooting.
+> **Build and install it as described in [INSTALL.md](INSTALL.md)**, which also covers where the ROMs, the OS disk
+> and CDs go, the first start, and troubleshooting.
 
 ## Features
 
@@ -32,7 +40,7 @@ the voice outputs are rendered through a model of the EIII's F-Chip and CEM3387 
 - **Saved banks stay with the project.** Disk images are never written. What the OS saves (Save Bank, ...) is kept as
   a change set inside the project, and can be written into a new image file or discarded.
 - **Projects reopen with their setup.** The drives, the hard disk changes, the analog model and the display settings
-  are saved in the CLAP state.
+  are saved in the DAW project.
 - **Display themes.** Click the Contrast knob to cycle Stock STN, Blue/White, Amber/Red, VFD and OLED. Turning the knob
   sets each theme's level.
 
@@ -50,32 +58,33 @@ the voice outputs are rendered through a model of the EIII's F-Chip and CEM3387 
 
 | | |
 |---|---|
-| Linux x86-64 | CLAP plugin (X11 GUI) and standalone (ALSA audio/MIDI): working, regression-tested |
+| macOS 11+ (Apple silicon and Intel, universal binary) | VST3 and Audio Unit (AUv2) instrument, Cocoa GUI |
 | Sampling into the instrument | working (beta): Sample In port → the EIII's own sampling code; saved banks kept with the project |
-| Windows, macOS, VST3 | planned |
 
-Tested hosts: Qtractor, and the `clap-validator` and `tools/clap_host_test` test hosts. With Qtractor on PipeWire,
-start it as `pw-jack qtractor` so it doesn't take the sound card away from the desktop.
+Validation: `auval -v aumu E3rk Eiii` passes (arm64 and x86_64), and the VST3 SDK validator passes all 47 tests.
+
+The plugin is written against the CLAP API (`plugin/eiii_clap.cpp`) and turned into the VST3 and the AU by
+[clap-wrapper](https://github.com/free-audio/clap-wrapper). No CLAP or standalone build is produced.
 
 ## Build
 
-Debian / Ubuntu:
+Xcode or the Command Line Tools, and CMake (`brew install cmake ninja`):
 
-    sudo apt install build-essential libasound2-dev libx11-dev libxext-dev
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+    cmake --build build
+    # -> build/EIII-Rack_assets/VST3/EIII Rack.vst3
+    #    build/EIII-Rack_assets/AUv2/EIII Rack.component
 
-    cd standalone
-    make plugin            # -> standalone/build/pic/EIII-Rack.clap
-    mkdir -p ~/.clap && cp build/pic/EIII-Rack.clap ~/.clap/
-    make release           # -> standalone/dist/eiii-standalone
-
-Everything builds from this tree. The MAME device sources it uses (CPU, FPU, SCSI, serial) and Berkeley SoftFloat are
-vendored in `standalone/third_party/mame`. The MAME executable is not needed.
+Add `-DEIII_INSTALL_AFTER_BUILD=ON` to copy both to `~/Library/Audio/Plug-Ins` after every build. The MAME device
+sources the emulator uses (CPU, FPU, SCSI, serial) and Berkeley SoftFloat are vendored in `machine/third_party/mame`;
+the MAME executable is not needed. CMake downloads the CLAP SDK, clap-wrapper, the VST3 SDK and the AudioUnitSDK at
+pinned versions on the first configure.
 
 ## Media setup
 
 See **[INSTALL.md](INSTALL.md)**: ROM file names and checksums, the OS 2.42 disk image, CD formats, the default
-folders (`~/.local/share/eiii/{roms,hd,cd}`), `eiii.conf` ([example](docs/eiii.conf.example)), the first start, and
-troubleshooting. The standalone takes the media on its command line (see [standalone/README.md](standalone/README.md)).
+folders (`~/Library/Application Support/EIII/{roms,hd,cd}`), `eiii.conf` ([example](docs/eiii.conf.example)), the
+first start, and troubleshooting.
 
 The factory banks receive MIDI on **channel 14** (a setting stored in each bank).
 
@@ -84,11 +93,10 @@ The factory banks receive MIDI on **channel 14** (a setting stored in each bank)
 | Path | What |
 |---|---|
 | `runtime/` | one emulated EIII (`eiii::runtime`) and its engine thread for hosts with audio/GUI threads (`eiii::engine`) |
-| `plugin/` | the CLAP plugin |
-| `standalone/` | Linux standalone, MAME-derived device shim, vendored MAME subset, regression scripts |
+| `plugin/` | the plugin (CLAP API; wrapped as VST3 + AU by clap-wrapper, see `CMakeLists.txt`) |
+| `machine/` | the EIII motherboard glue, MAME-derived device shim, vendored MAME subset |
 | `fchip/`, `cem/`, `host/` | the EIII voice output hardware: F-Chip, CEM3387 models, analog backend |
-| `panel/`, `ui/` | front-panel model and the software-rendered GUI |
-| `tests/`, `tools/` | unit and integration tests, test hosts, screenshot tool |
+| `panel/`, `ui/` | front-panel model, the software-rendered GUI, its Cocoa view and the macOS file dialogs |
 
 ## Legal
 
@@ -102,9 +110,10 @@ Third-party code in this repository, each under its own licence:
 
 | Component | Licence |
 |---|---|
-| MAME device sources (`standalone/third_party/mame/src`) | BSD-3-Clause, see [PROVENANCE.md](standalone/third_party/mame/PROVENANCE.md) |
-| Berkeley SoftFloat 3e (`standalone/third_party/mame/3rdparty/softfloat3`) | BSD-style, see its `COPYING.txt` |
-| CLAP headers (`third_party/clap`) | MIT |
+| MAME device sources (`machine/third_party/mame/src`) | BSD-3-Clause, see [PROVENANCE.md](machine/third_party/mame/PROVENANCE.md) |
+| Berkeley SoftFloat 3e (`machine/third_party/mame/3rdparty/softfloat3`) | BSD-style, see its `COPYING.txt` |
+| CLAP SDK, clap-wrapper, VST3 SDK (downloaded at build time) | MIT |
+| AudioUnitSDK (downloaded at build time) | Apache-2.0 |
 | stb_truetype / stb_image_write (`third_party/stb`) | public domain / MIT |
 | Archivo Narrow, Noto Sans fonts (`third_party/fonts`) | SIL Open Font License 1.1. The fonts are compiled into the GUI and plugin, so their licence files must accompany binaries |
 

@@ -1,20 +1,10 @@
 # Build output
 /build/
-/standalone/build/
 dist/
 *.o
 *.d
 *.a
-*.so
-*.clap
 *.dSYM/
-
-# Built test / tool / standalone binaries (sources have extensions)
-/tests/*
-!/tests/*.*
-/tools/*
-!/tools/*.*
-/standalone/eiii-standalone
 
 # Hand-made backups (history lives in git now)
 *.before_*

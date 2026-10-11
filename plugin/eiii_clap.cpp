@@ -1,12 +1,14 @@
-// EIII Rack — CLAP instrument: one emulated Emulator III (original boot ROM + OS 2.42 from the user's disk images)
+// EIII Rack — instrument plugin for macOS (VST3 and Audio Unit, built from this CLAP implementation by clap-wrapper):
+// one emulated Emulator III (original boot ROM + OS 2.42 from the user's disk images)
 // per plugin instance, with the rack front panel as its GUI.  The panel is the instrument: there are no plugin
 // parameters; MIDI goes to the emulated MIDI IN, the panel controls are the hardware inputs (eiii::panel_adapter).
 //
 // Threads: process() [audio] only exchanges lock-free data with the instance's engine thread; everything else is
-// [main-thread].  No process-wide mutable state: every instance owns its engine, adapter, X connection and window.
+// [main-thread].  No process-wide mutable state: every instance owns its engine, adapter and view.
 //
-// Media (never bundled; INSTALL.md): environment EIII_ROM_DIR / EIII_HD / EIII_CD, else ~/.config/eiii/eiii.conf, else
-// the default folders ~/.local/share/eiii/roms, .../hd (first image), .../cd (first .iso).  eiii.conf keys:
+// Media (never bundled; INSTALL.md): environment EIII_ROM_DIR / EIII_HD / EIII_CD, else
+// ~/Library/Application Support/EIII/eiii.conf, else the default folders ~/Library/Application Support/EIII/roms,
+// .../hd (first image), .../cd (first .iso).  eiii.conf keys:
 //   rom_dir = /path/to/roms        hd = /path/to/EIII_OS242.hd        cd = /path/to/factory.iso
 //   scsi4 .. scsi7 = cd:/path/disc.iso | cd: (drive without a disc) | hd:/path/disk.img     (optional extra drives D4..D7)
 // Audio: stereo Main Out; stereo Sample In feeds the ADC board (sampling through the original OS, level = the
@@ -16,34 +18,28 @@
 // its disks.  The menu bar above the panel shows the drives (D1 OS hard disk, D3 CD-ROM, extra drives D4..D7) and
 // changes them at runtime: a disc into / out of a CD drive is a hot swap (the OS sees a disc change); any other change
 // restarts the unit from power-on.  Clicking the floppy drive opens the D3 menu, its eject button ejects the CD.  File
-// choosers are a separate process (zenity or kdialog, or the program named by EIII_RACK_PICKER: called as
-// "PICKER cd|hd|rom START" and printing the chosen path) so no plugin thread ever waits for one.
+// choosers are non-modal NSOpenPanel / NSSavePanel windows, so no plugin thread ever waits for one.
 #include "clap/clap.h"
 #include "panel/eiii_panel_adapter.h"
 #include "runtime/eiii_engine.h"
-#include "standalone/ui_macro.h"
+#include "machine/ui_macro.h"
 #include "ui/panel_window.h"
+#include "ui/mac_file_dialog.h"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
-#include <csignal>
 #include <dirent.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fcntl.h>
 #include <fstream>
 #include <memory>
-#include <spawn.h>
 #include <string>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <thread>
 #include <atomic>
 #include <vector>
-
-extern char **environ;
 
 namespace {
 
@@ -86,8 +82,9 @@ std::string target_text(eiii::scsi_target const &t)
 	return t.kind == eiii::scsi_kind::cd ? "cd:" + t.path : t.kind == eiii::scsi_kind::hd ? "hd:" + t.path : "none";
 }
 
-std::string config_dir() { if (char const *x = getenv("XDG_CONFIG_HOME")) return std::string(x) + "/eiii"; if (char const *h = getenv("HOME")) return std::string(h) + "/.config/eiii"; return {}; }
-std::string default_media_dir() { if (char const *x = getenv("XDG_DATA_HOME")) return std::string(x) + "/eiii"; if (char const *h = getenv("HOME")) return std::string(h) + "/.local/share/eiii"; return {}; }
+// ~/Library/Application Support/EIII: eiii.conf and the default media folders roms/, hd/, cd/
+std::string config_dir() { if (char const *h = getenv("HOME")) return std::string(h) + "/Library/Application Support/EIII"; return {}; }
+std::string default_media_dir() { return config_dir(); }
 
 media_config read_media_config()
 {
@@ -117,7 +114,7 @@ media_config read_media_config()
 	if (char const *e = getenv("EIII_AUTOLOAD_BANK")) m.autoload_bank = atoi(e);
 	if (char const *e = getenv("EIII_AUTOLOAD_DRIVE")) m.autoload_drive = atoi(e);
 	if (char const *e = getenv("EIII_AUTOLOAD_PRESET")) m.autoload_preset = atoi(e);
-	// nothing configured: the default folders (XDG data dir)
+	// nothing configured: the default folders
 	std::string const data = default_media_dir();
 	auto first = [](std::string const &dir, std::vector<std::string> const &exts) {
 		std::vector<std::string> v;
@@ -148,83 +145,12 @@ media_config read_media_config()
 bool file_exists(std::string const &p) { struct stat st; return !p.empty() && stat(p.c_str(), &st) == 0; }
 std::string base_name(std::string const &p) { auto const s = p.find_last_of('/'); return s == std::string::npos ? p : p.substr(s + 1); }
 std::string dir_name(std::string const &p) { auto const s = p.find_last_of('/'); return s == std::string::npos ? std::string() : p.substr(0, s + 1); }
-bool in_path(char const *prog)
-{
-	char const *path = getenv("PATH");
-	std::string const ps = path ? path : "/usr/bin:/bin";
-	for (size_t pos = 0; pos <= ps.size();)
-	{
-		size_t e = ps.find(':', pos); if (e == std::string::npos) e = ps.size();
-		std::string const f = ps.substr(pos, e - pos) + "/" + prog;
-		if (e > pos && access(f.c_str(), X_OK) == 0) return true;
-		pos = e + 1;
-	}
-	return false;
-}
-
-// One chooser dialog as a child process; its stdout (the choice) is collected without blocking.  [main-thread]
-struct picker
-{
-	pid_t pid = -1;
-	int fd = -1;
-	std::string out;
-	bool running() const { return pid > 0 || fd >= 0; }
-	bool start(std::vector<std::string> const &args)
-	{
-		if (running() || args.empty()) return false;
-		int p[2];
-		if (pipe2(p, O_CLOEXEC) != 0) return false;
-		posix_spawn_file_actions_t fa; posix_spawn_file_actions_init(&fa);
-		posix_spawn_file_actions_adddup2(&fa, p[1], 1);
-		std::vector<char *> av; for (auto const &a : args) av.push_back(const_cast<char *>(a.c_str())); av.push_back(nullptr);
-		pid_t child;
-		int const rc = posix_spawnp(&child, av[0], &fa, nullptr, av.data(), environ);
-		posix_spawn_file_actions_destroy(&fa);
-		close(p[1]);
-		if (rc != 0) { close(p[0]); return false; }
-		fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL) | O_NONBLOCK);
-		pid = child; fd = p[0]; out.clear();
-		return true;
-	}
-	// true once the dialog has closed; `result` = its first output line ("" = cancelled)
-	bool poll(std::string &result)
-	{
-		if (fd >= 0)
-		{
-			char b[512];
-			for (;;)
-			{
-				ssize_t const n = read(fd, b, sizeof b);
-				if (n > 0) { out.append(b, size_t(n)); if (out.size() > 8192) out.resize(8192); continue; }
-				if (n == 0 || (errno != EAGAIN && errno != EINTR)) { close(fd); fd = -1; }
-				break;
-			}
-		}
-		if (pid > 0)
-		{
-			int st;
-			pid_t const r = waitpid(pid, &st, WNOHANG);
-			if (r == pid || (r < 0 && errno == ECHILD)) pid = -1;   // ECHILD: the host reaps children itself
-		}
-		if (running()) return false;
-		result = out.substr(0, out.find('\n'));
-		return true;
-	}
-	void cancel()
-	{
-		if (pid > 0) { kill(pid, SIGTERM); waitpid(pid, nullptr, 0); pid = -1; }
-		if (fd >= 0) { close(fd); fd = -1; }
-	}
-	~picker() { cancel(); }
-};
-
 // Settings -> "Use these drives as defaults": rewrite the media keys of eiii.conf, keep everything else (comments,
 // autoload, ...).  [main-thread, user action]
 bool write_media_defaults(media_config &m, std::string &msg)
 {
 	std::string const dir = config_dir();
 	if (dir.empty()) { msg = "no home folder"; return false; }
-	mkdir((dir.substr(0, dir.rfind('/'))).c_str(), 0755);
 	mkdir(dir.c_str(), 0755);
 	std::string const path = dir + "/eiii.conf";
 	std::vector<std::pair<std::string, std::string>> want = { { "rom_dir", m.rom_dir }, { "hd", m.hd() }, { "cd", m.cd() }, { "cem_model", m.cem_model } };
@@ -253,32 +179,6 @@ bool write_media_defaults(media_config &m, std::string &msg)
 	if (rename(tmp.c_str(), path.c_str()) != 0) { msg = "cannot replace " + path; return false; }
 	msg = "saved as defaults: " + path;
 	return true;
-}
-
-// argv of a file chooser: what = "cd" / "hd" (prints a file path), "rom" (prints a folder) or "save" (prints a new
-// file name), start = folder/file
-std::vector<std::string> picker_args(std::string const &what, std::string const &start)
-{
-	if (char const *custom = getenv("EIII_RACK_PICKER")) return { custom, what, start };
-	std::string const title = what == "cd" ? "EIII Rack - CD-ROM image" : what == "hd" ? "EIII Rack - hard disk image" : what == "save" ? "EIII Rack - save hard disk with its changes as" : "EIII Rack - boot ROM folder";
-	if (in_path("zenity"))
-	{
-		std::vector<std::string> a = { "zenity", "--file-selection", "--title=" + title };
-		if (!start.empty()) a.push_back("--filename=" + start);
-		if (what == "rom") { a.push_back("--directory"); return a; }
-		if (what == "save") { a.push_back("--save"); a.push_back("--confirm-overwrite"); return a; }
-		a.push_back(what == "cd" ? "--file-filter=CD-ROM images (*.iso) | *.iso *.ISO *.Iso" : "--file-filter=Hard disk images | *.iso *.ISO *.hd *.HD *.img *.IMG *.hda *.raw");
-		a.push_back("--file-filter=All files | *");
-		return a;
-	}
-	if (in_path("kdialog"))
-	{
-		if (what == "rom") return { "kdialog", "--title", title, "--getexistingdirectory", start.empty() ? "." : start };
-		if (what == "save") return { "kdialog", "--title", title, "--getsavefilename", start.empty() ? "." : start, "*.iso *.img *.hd|Hard disk images" };
-		return { "kdialog", "--title", title, "--getopenfilename", start.empty() ? "." : start,
-			what == "cd" ? "*.iso *.ISO|CD-ROM images (*.iso)\n*|All files" : "*.iso *.ISO *.hd *.HD *.img *.IMG *.hda *.raw|Hard disk images\n*|All files" };
-	}
-	return {};
 }
 
 // CD images next to the ones in use (quick list in the drive menus), sorted, at most `max`
@@ -317,7 +217,6 @@ struct instance
 	clap_plugin_t plugin{};
 	clap_host_t const *host = nullptr;
 	clap_host_timer_support_t const *host_timer = nullptr;
-	clap_host_posix_fd_support_t const *host_fd = nullptr;
 	clap_host_latency_t const *host_latency = nullptr;
 	clap_host_gui_t const *host_gui = nullptr;
 	clap_host_state_t const *host_state = nullptr;
@@ -327,7 +226,6 @@ struct instance
 	std::unique_ptr<eiii::panel_adapter> ui;
 	std::unique_ptr<eiii::ui::panel_window> win;
 	clap_id timer = CLAP_INVALID_ID;
-	int fd = -1;
 	double sample_rate = 0;
 	uint32_t max_frames = 0;
 	unsigned latency = 0;
@@ -336,7 +234,7 @@ struct instance
 	bool want_shown = true;
 	ui_macro macro;
 	bool macro_running = false;
-	picker pick;
+	eiii::ui::file_dialog pick;
 	std::string pick_what;           // "" idle, "cd", "hd", "rom"
 	unsigned pick_id = 0;            // SCSI ID the chosen image goes to
 	std::string media_msg;           // transient message in the menu bar (refused image, no chooser)
@@ -464,9 +362,10 @@ struct instance
 		else if (id < 8 && media.scsi[id].kind != eiii::scsi_kind::none && !media.scsi[id].path.empty()) cur = media.scsi[id].path;
 		else if (what == "cd") cur = media.cd_last_dir.empty() ? dir_name(media.cd()) : media.cd_last_dir;
 		else cur = dir_name(media.hd());
-		auto const args = picker_args(what, cur);
-		if (args.empty()) { show_media_message("no file chooser: install zenity or kdialog (or set paths in eiii.conf)"); return; }
-		if (!pick.start(args)) { show_media_message("cannot start " + args[0]); return; }
+		using k = eiii::ui::file_dialog::kind;
+		std::string const title = what == "cd" ? "EIII Rack \xE2\x80\x94 CD-ROM image" : what == "hd" ? "EIII Rack \xE2\x80\x94 hard disk image"
+			: what == "save" ? "EIII Rack \xE2\x80\x94 save hard disk with its changes as" : "EIII Rack \xE2\x80\x94 boot ROM folder";
+		if (!pick.start(what == "rom" ? k::open_folder : what == "save" ? k::save_file : k::open_file, title, cur)) { show_media_message("cannot open a file chooser"); return; }
 		pick_what = what; pick_id = id;
 		update_menu_status();
 	}
@@ -603,6 +502,16 @@ bool note_ports_get(clap_plugin_t const *, uint32_t index, bool is_input, clap_n
 }
 clap_plugin_note_ports_t const k_note_ports = { note_ports_count, note_ports_get };
 
+// no parameters (the panel is the instrument), but the extension must exist: the VST3 wrapper builds its MIDI CC /
+// pitch bend / program change mapping (VST3 delivers those only as parameters) from it, and turns them back into MIDI
+uint32_t params_count(clap_plugin_t const *) { return 0; }
+bool params_get_info(clap_plugin_t const *, uint32_t, clap_param_info_t *) { return false; }
+bool params_get_value(clap_plugin_t const *, clap_id, double *) { return false; }
+bool params_value_to_text(clap_plugin_t const *, clap_id, double, char *, uint32_t) { return false; }
+bool params_text_to_value(clap_plugin_t const *, clap_id, char const *, double *) { return false; }
+void params_flush(clap_plugin_t const *, clap_input_events_t const *, clap_output_events_t const *) { }
+clap_plugin_params_t const k_params = { params_count, params_get_info, params_get_value, params_value_to_text, params_text_to_value, params_flush };
+
 uint32_t latency_get(clap_plugin_t const *p) { return instance::of(p)->latency; }
 clap_plugin_latency_t const k_latency = { latency_get };
 
@@ -613,8 +522,6 @@ clap_plugin_render_t const k_render = { render_hard_rt, render_set };
 void timer_on(clap_plugin_t const *p, clap_id) { instance::of(p)->on_timer(); }
 clap_plugin_timer_support_t const k_timer = { timer_on };
 
-void fd_on(clap_plugin_t const *p, int, clap_posix_fd_flags_t) { instance *const s = instance::of(p); if (s->win && s->win->is_open()) s->win->tick(); }
-clap_plugin_posix_fd_support_t const k_fd = { fd_on };
 
 // state: host-UI settings (slider positions, display theme + per-theme Contrast level, power) and the media in use
 // ("media rom_dir|hd|cd PATH", cd "" = no disc).  The emulated machine itself starts from power-on like the hardware
@@ -713,15 +620,14 @@ bool state_load(clap_plugin_t const *p, clap_istream_t const *in)
 }
 clap_plugin_state_t const k_state = { state_save, state_load };
 
-// ---- GUI: X11, embedded, resizable with the panel's aspect ratio ----
-bool gui_is_api_supported(clap_plugin_t const *, char const *api, bool is_floating) { return !is_floating && !strcmp(api, CLAP_WINDOW_API_X11); }
-bool gui_get_preferred_api(clap_plugin_t const *, char const **api, bool *is_floating) { *api = CLAP_WINDOW_API_X11; *is_floating = false; return true; }
+// ---- GUI: Cocoa view embedded in the host's window, resizable with the panel's aspect ratio (sizes in points) ----
+bool gui_is_api_supported(clap_plugin_t const *, char const *api, bool is_floating) { return !is_floating && !strcmp(api, CLAP_WINDOW_API_COCOA); }
+bool gui_get_preferred_api(clap_plugin_t const *, char const **api, bool *is_floating) { *api = CLAP_WINDOW_API_COCOA; *is_floating = false; return true; }
 bool gui_create(clap_plugin_t const *p, char const *api, bool is_floating)
 {
 	instance *const s = instance::of(p);
-	if (is_floating || strcmp(api, CLAP_WINDOW_API_X11) || s->win) return false;
+	if (is_floating || strcmp(api, CLAP_WINDOW_API_COCOA) || s->win) return false;
 	s->win = std::make_unique<eiii::ui::panel_window>(*s->ui);
-	s->win->keyboard_shortcuts = false;              // the host owns the keyboard
 	s->win->view().set_menus(s->build_menus());
 	s->win->view().on_drive_click = [s](bool eject, float lx, float ly) { s->on_drive_click(eject, lx, ly); };
 	if (!s->gui_w) eiii::ui::panel_view::preferred_size(100.0 * s->gui_scale, s->gui_w, s->gui_h, true);
@@ -730,8 +636,6 @@ bool gui_create(clap_plugin_t const *p, char const *api, bool is_floating)
 void gui_destroy(clap_plugin_t const *p)
 {
 	instance *const s = instance::of(p);
-	if (s->fd >= 0 && s->host_fd) s->host_fd->unregister_fd(s->host, s->fd);
-	s->fd = -1;
 	if (s->win) { s->win->close(); s->win.reset(); }
 	if (s->ui) s->ui->release_all();
 }
@@ -775,11 +679,11 @@ bool gui_set_size(clap_plugin_t const *p, uint32_t w, uint32_t h)
 bool gui_set_parent(clap_plugin_t const *p, clap_window_t const *window)
 {
 	instance *const s = instance::of(p);
-	if (!s->win || !window || strcmp(window->api, CLAP_WINDOW_API_X11)) return false;
+	if (!s->win || !window || strcmp(window->api, CLAP_WINDOW_API_COCOA)) return false;
 	std::string err;
-	if (!s->win->open(window->x11, s->gui_w, s->gui_h, err)) { fprintf(stderr, "EIII Rack: %s\n", err.c_str()); return false; }
+	if (!s->win->open(window->cocoa, s->gui_w, s->gui_h, err)) { fprintf(stderr, "EIII Rack: %s\n", err.c_str()); return false; }
 	if (!s->want_shown) s->win->show(false);
-	if (s->host_fd && s->host_fd->register_fd(s->host, s->win->fd(), CLAP_POSIX_FD_READ)) s->fd = s->win->fd();
+	s->win->tick();                                  // first frame now, not at the next timer tick
 	return true;
 }
 bool gui_set_transient(clap_plugin_t const *, clap_window_t const *) { return false; }
@@ -794,7 +698,6 @@ bool p_init(clap_plugin_t const *p)
 {
 	instance *const s = instance::of(p);
 	s->host_timer = static_cast<clap_host_timer_support_t const *>(s->host->get_extension(s->host, CLAP_EXT_TIMER_SUPPORT));
-	s->host_fd = static_cast<clap_host_posix_fd_support_t const *>(s->host->get_extension(s->host, CLAP_EXT_POSIX_FD_SUPPORT));
 	s->host_latency = static_cast<clap_host_latency_t const *>(s->host->get_extension(s->host, CLAP_EXT_LATENCY));
 	s->host_gui = static_cast<clap_host_gui_t const *>(s->host->get_extension(s->host, CLAP_EXT_GUI));
 	s->media = read_media_config();
@@ -922,9 +825,9 @@ void const *p_get_extension(clap_plugin_t const *, char const *id)
 	if (!strcmp(id, CLAP_EXT_LATENCY)) return &k_latency;
 	if (!strcmp(id, CLAP_EXT_RENDER)) return &k_render;
 	if (!strcmp(id, CLAP_EXT_STATE)) return &k_state;
+	if (!strcmp(id, CLAP_EXT_PARAMS)) return &k_params;
 	if (!strcmp(id, CLAP_EXT_GUI)) return &k_gui;
 	if (!strcmp(id, CLAP_EXT_TIMER_SUPPORT)) return &k_timer;
-	if (!strcmp(id, CLAP_EXT_POSIX_FD_SUPPORT)) return &k_fd;
 	return nullptr;
 }
 void p_on_main_thread(clap_plugin_t const *) { }
@@ -947,10 +850,9 @@ clap_plugin_t const *f_create(clap_plugin_factory_t const *, clap_host_t const *
 }
 clap_plugin_factory_t const k_factory = { f_count, f_desc, f_create };
 
-bool e_init(char const *) { return true; }
-void e_deinit() { }
-void const *e_get_factory(char const *id) { return !strcmp(id, CLAP_PLUGIN_FACTORY_ID) ? &k_factory : nullptr; }
-
 } // namespace
 
-extern "C" CLAP_EXPORT clap_plugin_entry_t const clap_entry = { CLAP_VERSION_INIT, e_init, e_deinit, e_get_factory };
+// entry functions: plugin/eiii_entry.cpp exports them as clap_entry inside each wrapper (VST3, AU)
+bool eiii_entry_init(char const *) { return true; }
+void eiii_entry_deinit() { }
+void const *eiii_entry_get_factory(char const *id) { return !strcmp(id, CLAP_PLUGIN_FACTORY_ID) ? &k_factory : nullptr; }

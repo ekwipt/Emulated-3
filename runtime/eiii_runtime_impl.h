@@ -6,7 +6,7 @@
 #include "imagedev/harddriv.h"
 #include "imagedev/cdromimg.h"
 #include "sound/cdda.h"
-#include "../standalone/eiii_scsi.h"
+#include "../machine/eiii_scsi.h"
 #include <memory>
 #include <utility>
 

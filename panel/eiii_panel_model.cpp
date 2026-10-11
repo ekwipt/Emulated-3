@@ -1,5 +1,5 @@
 // EIII 4U rack panel model — see eiii_panel_model.h.  Codes and bits: MAME emu3.cpp port definitions
-// (standalone/eiii_panel_codes.h); LED bits: analysis/EIII_PANEL_LED_MAP.md.
+// (machine/eiii_panel_codes.h); LED bits: analysis/EIII_PANEL_LED_MAP.md.
 #include "eiii_panel_model.h"
 #include <cmath>
 #include <cstring>

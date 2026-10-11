@@ -6,6 +6,9 @@
 #include <cstring>
 #include <pthread.h>
 #include <sched.h>
+#if defined(__APPLE__)
+#include <pthread/qos.h>
+#endif
 #if defined(__x86_64__) || defined(__i386__)
 #include <xmmintrin.h>
 #endif
@@ -422,9 +425,14 @@ void engine::thread_main()
 {
 	set_ftz();
 	{
+#if defined(__APPLE__)
+		// macOS: highest QoS class, so the scheduler keeps the emulation on a performance core ahead of the audio
+		pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+#else
 		// a modest realtime priority when the process is allowed one (RLIMIT_RTPRIO / rtkit-granted hosts); else unchanged
 		sched_param sp{}; sp.sched_priority = 10;
 		pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+#endif
 	}
 	m_silence.assign(4096, 0.0f);
 	m_in_buf.clear(); m_in_end = m_in.read_index();
