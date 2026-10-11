@@ -581,14 +581,16 @@ struct instance
 };
 
 // ---------------------------------------------------------------------------------------------- extensions
-// Main Out, and Sample In: the ADC board's line inputs (what the original OS records with Sample -> Arm Sampling)
+// Main Out, and Sample In: the ADC board's line inputs (what the original OS records with Sample -> Arm Sampling).
+// Sample In is the main input so hosts feed it the track's own channels: as a non-main (sidechain) port REAPER only
+// fed it from channels 3/4, and Qtractor not at all.
 uint32_t audio_ports_count(clap_plugin_t const *, bool) { return 1; }
 bool audio_ports_get(clap_plugin_t const *, uint32_t index, bool is_input, clap_audio_port_info_t *info)
 {
 	if (index != 0) return false;
 	info->id = is_input ? 1 : 0;
 	snprintf(info->name, sizeof info->name, "%s", is_input ? "Sample In" : "Main Out");
-	info->flags = is_input ? 0 : CLAP_AUDIO_PORT_IS_MAIN;
+	info->flags = CLAP_AUDIO_PORT_IS_MAIN;
 	info->channel_count = 2;
 	info->port_type = CLAP_PORT_STEREO;
 	info->in_place_pair = CLAP_INVALID_ID;
